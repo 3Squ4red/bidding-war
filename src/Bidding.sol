@@ -3,16 +3,14 @@ pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
 
-
 error InvalidBid(uint256 lastBid);
 
 contract Bidding is Ownable2Step {
-
     // the bidding duration will get extended
     // by this duration after every successful bid
     uint256 public constant EXTEND_DURATION = 10 minutes;
 
-    // bidding time will get closed after this
+    // a bidding period will get over after this
     // duration and a winner will be selected
     uint256 private _timeUntilOver = 60 minutes;
 
@@ -30,20 +28,70 @@ contract Bidding is Ownable2Step {
 
     // EVENTS
 
-    event NewBid(address indexed newBidder, uint256 indexed bid, address indexed previousBidder);
+    event NewBid(
+        address indexed newBidder,
+        uint256 indexed bid,
+        address indexed previousBidder
+    );
 
-    event PeriodOver(address indexed winner, uint256 indexed winningBid, uint256 indexed commissionFees);
+    event PeriodOver(
+        address indexed winner,
+        uint256 indexed winningBid,
+        uint256 indexed commissionFees
+    );
 
-    // TODO: start timer from deployment
+    event EmptyPeriod(
+        uint256 indexed newPeriodStartingTime,
+        address indexed bidder,
+        uint256 indexed amountRefunded
+    );
+
     constructor() Ownable(msg.sender) {
+        // the time for first bid starts from
+        // the deployment time
+        _lastBidTime = block.timestamp;
+    }
 
+    function getHighestBid() external view returns (uint256) {
+        return _highestBid;
+    }
+
+    function getHighestBidder() external view returns (address payable) {
+        return _highestBidder;
+    }
+
+    function getTimeUntilOver() external view returns(uint256) {
+        return _timeUntilOver;
+    }
+
+    function getLastBidTime() external view returns(uint256) {
+        return _lastBidTime;
+    }
+
+    // returns true if the last period has ended
+    // without anyone participating in it
+    function isPeriodEmpty() external view returns (bool) {
+        uint256 overTime = _lastBidTime + _timeUntilOver;
+
+        return address(this).balance == 0 && block.timestamp > overTime;
     }
 
     function bid() external payable {
-        // pay the highest bidder if the bidding period is over
-        if(_isLastPeriodOver()) {
+        // caller becomes the winner if the bidding period is over
+        if (_isLastPeriodOver()) {
             uint256 balance = address(this).balance;
-    
+            // if no one participated in the last period
+            // start a new period from now and return
+            // the bidder's amount
+            if (balance == 0) {
+                _lastBidTime = block.timestamp;
+                payable(msg.sender).transfer(msg.value);
+
+                emit EmptyPeriod(block.timestamp, msg.sender, msg.value);
+
+                return;
+            }
+
             // give the owner 5% commision
             // percentage is calculated using BPS
             uint256 ownerCommission = (balance * 500) / 10_000;
@@ -51,19 +99,19 @@ contract Bidding is Ownable2Step {
 
             // caller becomes the winner and takes away rest of the money
             payable(msg.sender).transfer(address(this).balance);
-            
+
             emit PeriodOver(msg.sender, msg.value, ownerCommission);
 
             // reset for next period
             _resetGame();
+            return;
         }
 
         uint256 highestBid = _highestBid;
 
         // revert if the bidding amount is not greater
         // than the highest bid
-        if (msg.value <= highestBid)
-           revert InvalidBid(highestBid);
+        if (msg.value <= highestBid) revert InvalidBid(highestBid);
 
         // update the highest bid
         _highestBid = msg.value;
@@ -78,7 +126,6 @@ contract Bidding is Ownable2Step {
         // update the last bid time
         _lastBidTime = block.timestamp;
 
-
         emit NewBid(msg.sender, msg.value, previousBidder);
     }
 
@@ -86,17 +133,15 @@ contract Bidding is Ownable2Step {
         _timeUntilOver = 60 minutes;
         _highestBid = 0;
         _highestBidder = payable(address(0));
-        _lastBidTime = 0;
+        // the first bidder of next period
+        // will have 60 minutes from now to make a bid
+        _lastBidTime = block.timestamp;
     }
 
-    function _isLastPeriodOver() private returns(bool) {
-        uint256 lastBidTime = _lastBidTime;
+    function _isLastPeriodOver() private returns (bool) {
+        uint256 overTime = _lastBidTime + _timeUntilOver;
 
-        if (lastBidTime == 0) return false;
-
-        uint256 overTime = lastBidTime + _timeUntilOver;
-
-        if(overTime >= block.timestamp) {
+        if (overTime >= block.timestamp) {
             // update `_timeUntilOver` if the bidding period is not over yet
             _timeUntilOver = overTime - block.timestamp;
             return false;
