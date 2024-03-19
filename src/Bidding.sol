@@ -37,7 +37,7 @@ contract Bidding is Ownable2Step, ReentrancyGuard {
 
     event PeriodOver(
         address indexed winner,
-        uint256 indexed winningBid,
+        uint256 indexed winningAmount,
         uint256 indexed commissionFees
     );
 
@@ -62,7 +62,13 @@ contract Bidding is Ownable2Step, ReentrancyGuard {
     }
 
     function getTimeUntilOver() external view returns (uint256) {
-        return _timeUntilOver;
+        uint256 overTime = _lastBidTime + _timeUntilOver;
+
+        if (block.timestamp >= overTime) {
+            return 0;
+        } else {
+            return overTime - block.timestamp;
+        }
     }
 
     function getLastBidTime() external view returns (uint256) {
@@ -79,7 +85,6 @@ contract Bidding is Ownable2Step, ReentrancyGuard {
 
     function bid() external payable nonReentrant {
         address payable previousBidder = _highestBidder;
-        uint256 highestBid = _highestBid;
 
         if (_isLastPeriodOver()) {
             // interaction before checks and effects is safe
@@ -102,19 +107,21 @@ contract Bidding is Ownable2Step, ReentrancyGuard {
             uint256 ownerCommission = (balance * 500) / 10_000;
             payable(owner()).transfer(ownerCommission);
 
-            emit PeriodOver(previousBidder, highestBid, ownerCommission);
+            uint256 winningAmount = address(this).balance;
+            emit PeriodOver(previousBidder, winningAmount, ownerCommission);
 
             // reset for next period
             _resetGame();
 
             // last bidder becomes the winner and takes away rest of the money
-            previousBidder.transfer(address(this).balance);
+            previousBidder.transfer(winningAmount);
 
             // make sure that the contract doesn't have any money left after a period is over
             assert(address(this).balance == 0);
             return;
         }
 
+        uint256 highestBid = _highestBid;
         // revert if the bidding amount is not greater
         // than the highest bid
         if (msg.value <= highestBid) revert InvalidBid(highestBid);
