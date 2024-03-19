@@ -2,10 +2,11 @@
 pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 error InvalidBid(uint256 lastBid);
 
-contract Bidding is Ownable2Step {
+contract Bidding is Ownable2Step, ReentrancyGuard {
     // the bidding duration will get extended
     // by this duration after every successful bid
     uint256 public constant EXTEND_DURATION = 10 minutes;
@@ -60,11 +61,11 @@ contract Bidding is Ownable2Step {
         return _highestBidder;
     }
 
-    function getTimeUntilOver() external view returns(uint256) {
+    function getTimeUntilOver() external view returns (uint256) {
         return _timeUntilOver;
     }
 
-    function getLastBidTime() external view returns(uint256) {
+    function getLastBidTime() external view returns (uint256) {
         return _lastBidTime;
     }
 
@@ -76,19 +77,23 @@ contract Bidding is Ownable2Step {
         return address(this).balance == 0 && block.timestamp > overTime;
     }
 
-    function bid() external payable {
-        // caller becomes the winner if the bidding period is over
+    function bid() external payable nonReentrant {
+        address payable previousBidder = _highestBidder;
+        uint256 highestBid = _highestBid;
+
         if (_isLastPeriodOver()) {
+            // interaction before checks and effects is safe
+            // because we're using `nonReentrant` modifier
+            _returnCurrentBidderMoney();
+
             uint256 balance = address(this).balance;
             // if no one participated in the last period
             // start a new period from now and return
-            // the bidder's amount
+            // the current bidder's money
             if (balance == 0) {
                 _lastBidTime = block.timestamp;
-                payable(msg.sender).transfer(msg.value);
 
                 emit EmptyPeriod(block.timestamp, msg.sender, msg.value);
-
                 return;
             }
 
@@ -97,17 +102,18 @@ contract Bidding is Ownable2Step {
             uint256 ownerCommission = (balance * 500) / 10_000;
             payable(owner()).transfer(ownerCommission);
 
-            // caller becomes the winner and takes away rest of the money
-            payable(msg.sender).transfer(address(this).balance);
-
-            emit PeriodOver(msg.sender, msg.value, ownerCommission);
+            emit PeriodOver(previousBidder, highestBid, ownerCommission);
 
             // reset for next period
             _resetGame();
+
+            // last bidder becomes the winner and takes away rest of the money
+            previousBidder.transfer(address(this).balance);
+
+            // make sure that the contract doesn't have any money left after a period is over
+            assert(address(this).balance == 0);
             return;
         }
-
-        uint256 highestBid = _highestBid;
 
         // revert if the bidding amount is not greater
         // than the highest bid
@@ -116,7 +122,6 @@ contract Bidding is Ownable2Step {
         // update the highest bid
         _highestBid = msg.value;
 
-        address payable previousBidder = _highestBidder;
         // update the higgest bidder
         _highestBidder = payable(msg.sender);
 
@@ -136,6 +141,12 @@ contract Bidding is Ownable2Step {
         // the first bidder of next period
         // will have 60 minutes from now to make a bid
         _lastBidTime = block.timestamp;
+    }
+
+    function _returnCurrentBidderMoney() private {
+        // since the bidding time is over, return the current
+        // bidder's money if they sent any
+        if (msg.value > 0) payable(msg.sender).transfer(msg.value);
     }
 
     function _isLastPeriodOver() private returns (bool) {
